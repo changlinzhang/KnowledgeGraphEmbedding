@@ -29,7 +29,7 @@ def parse_args(args=None):
     parser.add_argument('--cuda', action='store_true', help='use GPU')
     
     parser.add_argument('--do_train', action='store_true')
-    parser.add_argument('--do_valid', action='store_true')
+    parser.add_argument('--do_valid', action='store_false')
     parser.add_argument('--do_test', action='store_true')
     parser.add_argument('--evaluate_train', action='store_true', help='Evaluate on training data')
     
@@ -123,7 +123,8 @@ def read_triple(file_path, entity2id, relation2id):
     triples = []
     with open(file_path) as fin:
         for line in fin:
-            h, r, t = line.strip().split('\t')
+            info = line.strip().split()
+            h, r, t = int(info[0]), int(info[1]), int(info[2])
             triples.append((entity2id[h], relation2id[r], entity2id[t]))
     return triples
 
@@ -176,29 +177,43 @@ def main(args):
     # Write logs to checkpoint and console
     set_logger(args)
     
-    with open(os.path.join(args.data_path, 'entities.dict')) as fin:
-        entity2id = dict()
-        for line in fin:
-            eid, entity = line.strip().split('\t')
-            entity2id[entity] = int(eid)
+    # with open(os.path.join(args.data_path, 'entities.dict')) as fin:
+    #     entity2id = dict()
+    #     for line in fin:
+    #         eid, entity = line.strip().split('\t')
+    #         entity2id[entity] = int(eid)
+    #
+    # with open(os.path.join(args.data_path, 'relations.dict')) as fin:
+    #     relation2id = dict()
+    #     for line in fin:
+    #         rid, relation = line.strip().split('\t')
+    #         relation2id[relation] = int(rid)
 
-    with open(os.path.join(args.data_path, 'relations.dict')) as fin:
-        relation2id = dict()
-        for line in fin:
-            rid, relation = line.strip().split('\t')
-            relation2id[relation] = int(rid)
-    
-    # Read regions for Countries S* datasets
-    if args.countries:
-        regions = list()
-        with open(os.path.join(args.data_path, 'regions.list')) as fin:
-            for line in fin:
-                region = line.strip()
-                regions.append(entity2id[region])
-        args.regions = regions
+    # # Read regions for Countries S* datasets
+    # if args.countries:
+    #     regions = list()
+    #     with open(os.path.join(args.data_path, 'regions.list')) as fin:
+    #         for line in fin:
+    #             region = line.strip()
+    #             regions.append(entity2id[region])
+    #     args.regions = regions
 
-    nentity = len(entity2id)
-    nrelation = len(relation2id)
+    # nentity = len(entity2id)
+    # nrelation = len(relation2id)
+
+    with open(os.path.join(args.data_path, 'stat.txt'), 'r') as fr:
+        for line in fr:
+            line_split = line.split()
+            nentity, nrelation = int(line_split[0]), int(line_split[1])
+            break
+
+    entity2id = dict()
+    for i in range(0, nentity):
+        entity2id[i] = i
+
+    relation2id = dict()
+    for i in range(nrelation):
+        relation2id[i] = i
     
     args.nentity = nentity
     args.nrelation = nrelation
@@ -208,15 +223,15 @@ def main(args):
     logging.info('#entity: %d' % nentity)
     logging.info('#relation: %d' % nrelation)
     
-    train_triples = read_triple(os.path.join(args.data_path, 'train.txt'), entity2id, relation2id)
+    train_triples = read_triple(os.path.join(args.data_path, 'train2id.txt'), entity2id, relation2id)
     logging.info('#train: %d' % len(train_triples))
-    valid_triples = read_triple(os.path.join(args.data_path, 'valid.txt'), entity2id, relation2id)
-    logging.info('#valid: %d' % len(valid_triples))
-    test_triples = read_triple(os.path.join(args.data_path, 'test.txt'), entity2id, relation2id)
+    # valid_triples = read_triple(os.path.join(args.data_path, 'valid2id.txt'), entity2id, relation2id)
+    # logging.info('#valid: %d' % len(valid_triples))
+    test_triples = read_triple(os.path.join(args.data_path, 'test2id.txt'), entity2id, relation2id)
     logging.info('#test: %d' % len(test_triples))
     
     #All true triples
-    all_true_triples = train_triples + valid_triples + test_triples
+    all_true_triples = train_triples + test_triples
     
     kge_model = KGEModel(
         model_name=args.model,
@@ -329,10 +344,10 @@ def main(args):
                 log_metrics('Training average', step, metrics)
                 training_logs = []
                 
-            if args.do_valid and step % args.valid_steps == 0:
-                logging.info('Evaluating on Valid Dataset...')
-                metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
-                log_metrics('Valid', step, metrics)
+            # if args.do_valid and step % args.valid_steps == 0:
+            #     logging.info('Evaluating on Valid Dataset...')
+            #     metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+            #     log_metrics('Valid', step, metrics)
         
         save_variable_list = {
             'step': step, 
@@ -341,10 +356,10 @@ def main(args):
         }
         save_model(kge_model, optimizer, save_variable_list, args)
         
-    if args.do_valid:
-        logging.info('Evaluating on Valid Dataset...')
-        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
-        log_metrics('Valid', step, metrics)
+    # if args.do_valid:
+    #     logging.info('Evaluating on Valid Dataset...')
+    #     metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+    #     log_metrics('Valid', step, metrics)
     
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
