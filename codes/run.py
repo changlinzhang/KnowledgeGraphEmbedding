@@ -50,7 +50,8 @@ def parse_args(args=None):
     parser.add_argument('-b', '--batch_size', default=1024, type=int)
     parser.add_argument('-r', '--regularization', default=0.0, type=float)
     parser.add_argument('--test_batch_size', default=4, type=int, help='valid/test batch size')
-    parser.add_argument('--uni_weight', action='store_true', 
+    # TODO
+    parser.add_argument('--uni_weight', action='store_true',
                         help='Otherwise use subsampling weighting like in word2vec')
     
     parser.add_argument('-lr', '--learning_rate', default=0.0001, type=float)
@@ -116,16 +117,28 @@ def save_model(model, optimizer, save_variable_list, args):
         relation_embedding
     )
 
-def read_triple(file_path, entity2id, relation2id):
+def totuple(a):
+    try:
+        return tuple(totuple(i) for i in a)
+    except TypeError:
+        return a
+
+def read_triple(file_path, tem_file_path, entity2id, relation2id):
     '''
     Read triples and map them into ids.
     '''
+    tem = np.load(tem_file_path).tolist()
+    tem = totuple(tem)
     triples = []
     with open(file_path) as fin:
+        i = 0
         for line in fin:
             info = line.strip().split()
             h, r, t = int(info[0]), int(info[1]), int(info[2])
-            triples.append((entity2id[h], relation2id[r], entity2id[t]))
+            time = tem[i]
+            i += 1
+            # triples.append((entity2id[h], relation2id[r], entity2id[t]))
+            triples.append((entity2id[h], relation2id[r], time, entity2id[t]))
     return triples
 
 def set_logger(args):
@@ -176,30 +189,6 @@ def main(args):
     
     # Write logs to checkpoint and console
     set_logger(args)
-    
-    # with open(os.path.join(args.data_path, 'entities.dict')) as fin:
-    #     entity2id = dict()
-    #     for line in fin:
-    #         eid, entity = line.strip().split('\t')
-    #         entity2id[entity] = int(eid)
-    #
-    # with open(os.path.join(args.data_path, 'relations.dict')) as fin:
-    #     relation2id = dict()
-    #     for line in fin:
-    #         rid, relation = line.strip().split('\t')
-    #         relation2id[relation] = int(rid)
-
-    # # Read regions for Countries S* datasets
-    # if args.countries:
-    #     regions = list()
-    #     with open(os.path.join(args.data_path, 'regions.list')) as fin:
-    #         for line in fin:
-    #             region = line.strip()
-    #             regions.append(entity2id[region])
-    #     args.regions = regions
-
-    # nentity = len(entity2id)
-    # nrelation = len(relation2id)
 
     with open(os.path.join(args.data_path, 'stat.txt'), 'r') as fr:
         for line in fr:
@@ -223,11 +212,11 @@ def main(args):
     logging.info('#entity: %d' % nentity)
     logging.info('#relation: %d' % nrelation)
     
-    train_triples = read_triple(os.path.join(args.data_path, 'train2id.txt'), entity2id, relation2id)
+    train_triples = read_triple(os.path.join(args.data_path, 'train2id.txt'), os.path.join(args.data_path, 'train_tem.npy'), entity2id, relation2id)
     logging.info('#train: %d' % len(train_triples))
     # valid_triples = read_triple(os.path.join(args.data_path, 'valid2id.txt'), entity2id, relation2id)
     # logging.info('#valid: %d' % len(valid_triples))
-    test_triples = read_triple(os.path.join(args.data_path, 'test2id.txt'), entity2id, relation2id)
+    test_triples = read_triple(os.path.join(args.data_path, 'test2id.txt'), os.path.join(args.data_path, 'test_tem.npy'), entity2id, relation2id)
     logging.info('#test: %d' % len(test_triples))
     
     #All true triples
@@ -255,19 +244,21 @@ def main(args):
         train_dataloader_head = DataLoader(
             TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'head-batch'), 
             batch_size=args.batch_size,
-            shuffle=True, 
-            num_workers=max(1, args.cpu_num//2),
+            shuffle=True,
+            num_workers=1,
             collate_fn=TrainDataset.collate_fn
         )
         
         train_dataloader_tail = DataLoader(
             TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'tail-batch'), 
             batch_size=args.batch_size,
-            shuffle=True, 
-            num_workers=max(1, args.cpu_num//2),
+            shuffle=True,
+            num_workers=1,
             collate_fn=TrainDataset.collate_fn
         )
-        
+
+        # num_workers=max(1, args.cpu_num//2),
+
         train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
         
         # Set training configuration
@@ -366,10 +357,10 @@ def main(args):
         metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
         log_metrics('Test', step, metrics)
     
-    if args.evaluate_train:
-        logging.info('Evaluating on Training Dataset...')
-        metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args)
-        log_metrics('Test', step, metrics)
+    # if args.evaluate_train:
+    #     logging.info('Evaluating on Training Dataset...')
+    #     metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args)
+    #     log_metrics('Test', step, metrics)
         
 if __name__ == '__main__':
     main(parse_args())

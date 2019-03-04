@@ -18,15 +18,19 @@ from torch.utils.data import DataLoader
 
 from dataloader import TestDataset
 
+from LSTMLinear import LSTMModel
+
 class KGEModel(nn.Module):
-    def __init__(self, model_name, nentity, nrelation, hidden_dim, gamma, 
-                 double_entity_embedding=False, double_relation_embedding=False):
+    def __init__(self, model_name, nentity, nrelation, hidden_dim, gamma,
+                 double_entity_embedding=False, double_relation_embedding=False, double_tem_embedding=False):
         super(KGEModel, self).__init__()
         self.model_name = model_name
         self.nentity = nentity
         self.nrelation = nrelation
+        self.ntem = 32
         self.hidden_dim = hidden_dim
         self.epsilon = 2.0
+        self.lstm = LSTMModel(self.hidden_dim, n_layer=1)
         
         self.gamma = nn.Parameter(
             torch.Tensor([gamma]), 
@@ -40,7 +44,8 @@ class KGEModel(nn.Module):
         
         self.entity_dim = hidden_dim*2 if double_entity_embedding else hidden_dim
         self.relation_dim = hidden_dim*2 if double_relation_embedding else hidden_dim
-        
+        self.tem_dim = hidden_dim * 2 if double_tem_embedding else hidden_dim
+
         self.entity_embedding = nn.Parameter(torch.zeros(nentity, self.entity_dim))
         nn.init.uniform_(
             tensor=self.entity_embedding, 
@@ -54,12 +59,19 @@ class KGEModel(nn.Module):
             a=-self.embedding_range.item(), 
             b=self.embedding_range.item()
         )
+
+        self.tem_embedding = nn.Parameter(torch.zeros(self.ntem, self.tem_dim))
+        nn.init.uniform_(
+            tensor=self.tem_embedding,
+            a=-self.embedding_range.item(),
+            b=self.embedding_range.item()
+        )
         
         if model_name == 'pRotatE':
             self.modulus = nn.Parameter(torch.Tensor([[0.5 * self.embedding_range.item()]]))
         
         #Do not forget to modify this line when you add a new model in the "forward" function
-        if model_name not in ['TransE', 'DistMult', 'ComplEx', 'RotatE', 'pRotatE']:
+        if model_name not in ['TATransE', 'TransE', 'TADistMult', 'DistMult', 'ComplEx', 'RotatE', 'pRotatE']:
             raise ValueError('model %s not supported' % model_name)
             
         if model_name == 'RotatE' and (not double_entity_embedding or double_relation_embedding):
@@ -68,7 +80,7 @@ class KGEModel(nn.Module):
         if model_name == 'ComplEx' and (not double_entity_embedding or not double_relation_embedding):
             raise ValueError('ComplEx should use --double_entity_embedding and --double_relation_embedding')
         
-    def forward(self, sample, mode='single'):
+    def forward(self, sample_triple, sample_tem, negative_sample = None, mode='single'):
         '''
         Forward function that calculate the score of a batch of triples.
         In the 'single' mode, sample is a batch of triple.
@@ -80,28 +92,42 @@ class KGEModel(nn.Module):
         '''
 
         if mode == 'single':
-            batch_size, negative_sample_size = sample.size(0), 1
+            batch_size, negative_sample_size = sample_triple.size(0), 1
             
             head = torch.index_select(
                 self.entity_embedding, 
                 dim=0, 
-                index=sample[:,0]
+                index=sample_triple[:,0]
             ).unsqueeze(1)
             
             relation = torch.index_select(
                 self.relation_embedding, 
                 dim=0, 
-                index=sample[:,1]
+                index=sample_triple[:,1]
             ).unsqueeze(1)
+
+            tem = None
+            for i in range(0, sample_tem.size(0)):
+                cur_tem = torch.index_select(
+                    self.tem_embedding,
+                    dim=0,
+                    index=sample_tem[i]
+                ).unsqueeze(0)
+                if tem is None:
+                    tem = cur_tem
+                else:
+                    tem = torch.cat((tem, cur_tem), 0)
             
             tail = torch.index_select(
                 self.entity_embedding, 
                 dim=0, 
-                index=sample[:,2]
+                index=sample_triple[:,2]
             ).unsqueeze(1)
             
         elif mode == 'head-batch':
-            tail_part, head_part = sample
+            # tail_part, head_part = sample_triple
+            tail_part = sample_triple
+            head_part = negative_sample
             batch_size, negative_sample_size = head_part.size(0), head_part.size(1)
             
             head = torch.index_select(
@@ -115,7 +141,19 @@ class KGEModel(nn.Module):
                 dim=0, 
                 index=tail_part[:, 1]
             ).unsqueeze(1)
-            
+
+            tem = None
+            for i in range(0, sample_tem.size(0)):
+                cur_tem = torch.index_select(
+                    self.tem_embedding,
+                    dim=0,
+                    index=sample_tem[i]
+                ).unsqueeze(0)
+                if tem is None:
+                    tem = cur_tem
+                else:
+                    tem = torch.cat((tem, cur_tem), 0)
+
             tail = torch.index_select(
                 self.entity_embedding, 
                 dim=0, 
@@ -123,7 +161,9 @@ class KGEModel(nn.Module):
             ).unsqueeze(1)
             
         elif mode == 'tail-batch':
-            head_part, tail_part = sample
+            # head_part, tail_part = sample_triple
+            head_part = sample_triple
+            tail_part = negative_sample
             batch_size, negative_sample_size = tail_part.size(0), tail_part.size(1)
             
             head = torch.index_select(
@@ -137,6 +177,26 @@ class KGEModel(nn.Module):
                 dim=0,
                 index=head_part[:, 1]
             ).unsqueeze(1)
+            # print(relation.size())
+
+            tem = None
+            for i in range(0, sample_tem.size(0)):
+                cur_tem = torch.index_select(
+                    self.tem_embedding,
+                    dim=0,
+                    index=sample_tem[i]
+                ).unsqueeze(0)
+                if tem is None:
+                    tem = cur_tem
+                else:
+                    tem = torch.cat((tem, cur_tem), 0)
+                # print(tem.size())
+
+            # tem = torch.index_select(
+            #     self.tem_embedding,
+            #     dim=0,
+            #     index=sample_tem
+            # ).unsqueeze(1)
             
             tail = torch.index_select(
                 self.entity_embedding, 
@@ -148,7 +208,9 @@ class KGEModel(nn.Module):
             raise ValueError('mode %s not supported' % mode)
             
         model_func = {
+            'TATransE': self.TATransE,
             'TransE': self.TransE,
+            'TADistMult': self.TADistMult,
             'DistMult': self.DistMult,
             'ComplEx': self.ComplEx,
             'RotatE': self.RotatE,
@@ -156,12 +218,23 @@ class KGEModel(nn.Module):
         }
         
         if self.model_name in model_func:
-            score = model_func[self.model_name](head, relation, tail, mode)
+            score = model_func[self.model_name](head, relation, tem, tail, mode)
         else:
             raise ValueError('model %s not supported' % self.model_name)
         
         return score
-    
+
+    def TATransE(self, head, relation, tem, tail, mode):
+        rseq = self.get_rseq(relation, tem)
+        rseq = rseq.unsqueeze(1)
+        if mode == 'head-batch':
+            score = head + (rseq - tail)
+        else:
+            score = (head + rseq) - tail
+
+        score = self.gamma.item() - torch.norm(score, p=1, dim=2)
+        return score
+
     def TransE(self, head, relation, tail, mode):
         if mode == 'head-batch':
             score = head + (relation - tail)
@@ -169,6 +242,17 @@ class KGEModel(nn.Module):
             score = (head + relation) - tail
 
         score = self.gamma.item() - torch.norm(score, p=1, dim=2)
+        return score
+
+    def TADistMult(self, head, relation, tem, tail, mode):
+        rseq = self.get_rseq(relation, tem)
+        rseq = rseq.unsqueeze(1)
+        if mode == 'head-batch':
+            score = head * (rseq * tail)
+        else:
+            score = (head * rseq) * tail
+
+        score = score.sum(dim = 2)
         return score
 
     def DistMult(self, head, relation, tail, mode):
@@ -179,6 +263,24 @@ class KGEModel(nn.Module):
 
         score = score.sum(dim = 2)
         return score
+
+    def get_rseq(self, pos_r_e, pos_tem_e):
+        # pos_r_e = self.rel_embeddings(pos_r)
+        # pos_r_e = pos_r_e.unsqueeze(0).transpose(0, 1)
+
+        bs = pos_tem_e.shape[0]  # batch size
+        tem_len = pos_tem_e.shape[1]
+        # pos_tem = pos_tem.view(bs * tem_len)
+        # token_e = self.tem_embeddings(pos_tem)
+        # token_e = token_e.view(bs, tem_len, self.embedding_size)
+        pos_seq_e = torch.cat((pos_r_e, pos_tem_e), 1)
+
+        hidden_tem = self.lstm(pos_seq_e)
+        hidden_tem = hidden_tem[0, :, :]
+        pos_rseq_e = hidden_tem
+
+        # print(pos_rseq_e)
+        return pos_rseq_e
 
     def ComplEx(self, head, relation, tail, mode):
         re_head, im_head = torch.chunk(head, 2, dim=2)
@@ -257,14 +359,15 @@ class KGEModel(nn.Module):
 
         optimizer.zero_grad()
 
-        positive_sample, negative_sample, subsampling_weight, mode = next(train_iterator)
+        positive_sample_triple, positive_sample_tem, negative_sample, subsampling_weight, mode = next(train_iterator)
 
         if args.cuda:
-            positive_sample = positive_sample.cuda()
+            positive_sample_triple = positive_sample_triple.cuda()
+            positive_sample_tem = positive_sample_tem.cuda()
             negative_sample = negative_sample.cuda()
             subsampling_weight = subsampling_weight.cuda()
 
-        negative_score = model((positive_sample, negative_sample), mode=mode)
+        negative_score = model(positive_sample_triple, positive_sample_tem, negative_sample, mode=mode)
 
         if args.negative_adversarial_sampling:
             #In self-negative sampling, we do not apply back-propagation on the sampling weight
@@ -273,7 +376,7 @@ class KGEModel(nn.Module):
         else:
             negative_score = F.logsigmoid(-negative_score).mean(dim = 1)
 
-        positive_score = model(positive_sample)
+        positive_score = model(positive_sample_triple, positive_sample_tem)
 
         positive_score = F.logsigmoid(positive_score).squeeze(dim = 1)
 
@@ -317,112 +420,87 @@ class KGEModel(nn.Module):
         '''
         
         model.eval()
-        
-        if args.countries:
-            #Countries S* datasets are evaluated on AUC-PR
-            #Process test data for AUC-PR evaluation
-            sample = list()
-            y_true  = list()
-            for head, relation, tail in test_triples:
-                for candidate_region in args.regions:
-                    y_true.append(1 if candidate_region == tail else 0)
-                    sample.append((head, relation, candidate_region))
 
-            sample = torch.LongTensor(sample)
-            if args.cuda:
-                sample = sample.cuda()
+        #Otherwise use standard (filtered) MRR, MR, HITS@1, HITS@3, and HITS@10 metrics
+        #Prepare dataloader for evaluation
+        test_dataloader_head = DataLoader(
+            TestDataset(
+                test_triples,
+                all_true_triples,
+                args.nentity,
+                args.nrelation,
+                'head-batch'
+            ),
+            batch_size=args.test_batch_size,
+            num_workers=max(1, args.cpu_num//2),
+            collate_fn=TestDataset.collate_fn
+        )
 
-            with torch.no_grad():
-                y_score = model(sample).squeeze(1).cpu().numpy()
+        test_dataloader_tail = DataLoader(
+            TestDataset(
+                test_triples,
+                all_true_triples,
+                args.nentity,
+                args.nrelation,
+                'tail-batch'
+            ),
+            batch_size=args.test_batch_size,
+            num_workers=max(1, args.cpu_num//2),
+            collate_fn=TestDataset.collate_fn
+        )
 
-            y_true = np.array(y_true)
+        test_dataset_list = [test_dataloader_head, test_dataloader_tail]
 
-            #average_precision_score is the same as auc_pr
-            auc_pr = average_precision_score(y_true, y_score)
+        logs = []
 
-            metrics = {'auc_pr': auc_pr}
-            
-        else:
-            #Otherwise use standard (filtered) MRR, MR, HITS@1, HITS@3, and HITS@10 metrics
-            #Prepare dataloader for evaluation
-            test_dataloader_head = DataLoader(
-                TestDataset(
-                    test_triples, 
-                    all_true_triples, 
-                    args.nentity, 
-                    args.nrelation, 
-                    'head-batch'
-                ), 
-                batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
-                collate_fn=TestDataset.collate_fn
-            )
+        step = 0
+        total_steps = sum([len(dataset) for dataset in test_dataset_list])
 
-            test_dataloader_tail = DataLoader(
-                TestDataset(
-                    test_triples, 
-                    all_true_triples, 
-                    args.nentity, 
-                    args.nrelation, 
-                    'tail-batch'
-                ), 
-                batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
-                collate_fn=TestDataset.collate_fn
-            )
-            
-            test_dataset_list = [test_dataloader_head, test_dataloader_tail]
-            
-            logs = []
+        with torch.no_grad():
+            for test_dataset in test_dataset_list:
+                for positive_sample, negative_sample, filter_bias, mode in test_dataset:
+                    if args.cuda:
+                        positive_sample = positive_sample.cuda()
+                        negative_sample = negative_sample.cuda()
+                        filter_bias = filter_bias.cuda()
 
-            step = 0
-            total_steps = sum([len(dataset) for dataset in test_dataset_list])
+                    batch_size = positive_sample.size(0)
 
-            with torch.no_grad():
-                for test_dataset in test_dataset_list:
-                    for positive_sample, negative_sample, filter_bias, mode in test_dataset:
-                        if args.cuda:
-                            positive_sample = positive_sample.cuda()
-                            negative_sample = negative_sample.cuda()
-                            filter_bias = filter_bias.cuda()
+                    score = model((positive_sample, negative_sample), mode)
+                    score += filter_bias
 
-                        batch_size = positive_sample.size(0)
+                    #Explicitly sort all the entities to ensure that there is no test exposure bias
+                    argsort = torch.argsort(score, dim = 1, descending=True)
 
-                        score = model((positive_sample, negative_sample), mode)
-                        score += filter_bias
+                    if mode == 'head-batch':
+                        positive_arg = positive_sample[:, 0]
+                    elif mode == 'tail-batch':
+                        positive_arg = positive_sample[:, 2]
+                    else:
+                        raise ValueError('mode %s not supported' % mode)
 
-                        #Explicitly sort all the entities to ensure that there is no test exposure bias
-                        argsort = torch.argsort(score, dim = 1, descending=True)
+                    for i in range(batch_size):
+                        #Notice that argsort is not ranking
+                        ranking = (argsort[i, :] == positive_arg[i]).nonzero()
+                        assert ranking.size(0) == 1
 
-                        if mode == 'head-batch':
-                            positive_arg = positive_sample[:, 0]
-                        elif mode == 'tail-batch':
-                            positive_arg = positive_sample[:, 2]
-                        else:
-                            raise ValueError('mode %s not supported' % mode)
+                        #ranking + 1 is the true ranking used in evaluation metrics
+                        ranking = 1 + ranking.item()
+                        logs.append({
+                            'MRR': 1.0/ranking,
+                            'MR': float(ranking),
+                            'HITS@1': 1.0 if ranking <= 1 else 0.0,
+                            'HITS@3': 1.0 if ranking <= 3 else 0.0,
+                            'HITS@10': 1.0 if ranking <= 10 else 0.0,
+                        })
 
-                        for i in range(batch_size):
-                            #Notice that argsort is not ranking
-                            ranking = (argsort[i, :] == positive_arg[i]).nonzero()
-                            assert ranking.size(0) == 1
+                    if step % args.test_log_steps == 0:
+                        logging.info('Evaluating the model... (%d/%d)' % (step, total_steps))
 
-                            #ranking + 1 is the true ranking used in evaluation metrics
-                            ranking = 1 + ranking.item()
-                            logs.append({
-                                'MRR': 1.0/ranking,
-                                'MR': float(ranking),
-                                'HITS@1': 1.0 if ranking <= 1 else 0.0,
-                                'HITS@3': 1.0 if ranking <= 3 else 0.0,
-                                'HITS@10': 1.0 if ranking <= 10 else 0.0,
-                            })
+                    step += 1
 
-                        if step % args.test_log_steps == 0:
-                            logging.info('Evaluating the model... (%d/%d)' % (step, total_steps))
-
-                        step += 1
-
-            metrics = {}
-            for metric in logs[0].keys():
-                metrics[metric] = sum([log[metric] for log in logs])/len(logs)
+        metrics = {}
+        for metric in logs[0].keys():
+            metrics[metric] = sum([log[metric] for log in logs])/len(logs)
 
         return metrics
